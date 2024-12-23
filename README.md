@@ -3,7 +3,7 @@
 
 Welcome to my submission for the **USC HUMANS Lab Hackathon 2024**!  
 This repository focuses on analyzing political tweets collected from Twitter/X, and demonstrates a pipeline to **extract**, **store**, **query**, and **analyze** the data. 
-
+In order to test the app create database from sample data, and run the nl1sql app following the guide inside nl2sql folder.
 ---
 
 ## 📸 Quick Glimpse
@@ -17,11 +17,11 @@ Prompted to find top users by tweet count.
 
 ## 🗂 Repository Contents
 
-1. **`Analysis.ipynb`**  
-   - A Jupyter Notebook demonstrating how to **explore** and **analyze** tweets stored in the SQL database.
-   
-2. **`create_db.ipynb`**  
-   - Responsible for extracting compressed tweet data and **saving** it into a SQL database.
+1.**`create_db.ipynb`**  
+   - Responsible for extracting compressed tweet data and **saving** it into a SQL database. Note that I have placed a limit to only parsing the first 5 parts of the db.
+
+2. **`Analysis.ipynb`**  
+   - A Jupyter Notebook demonstrating how to **explore** and **analyze** tweets stored in the SQL database. 
 
 3. **`nl2sql_agent/`**  
    - A folder containing an AI-powered agent that converts **natural language** queries into **SQL**.  
@@ -67,3 +67,9 @@ This approach offers a glimpse into how modern NLP and database management can h
 
 ---
 
+## 🫶 Notable Resources Utilizes:
+
+- **Streamlit:** Ease creation of user interface.
+- **Ollama:** For loading models and utilizing tool calling. 
+
+---

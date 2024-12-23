@@ -64,7 +64,7 @@ def get_db_connection():
     to the actual 'tweets.duckdb' that contains your real data.
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(current_dir, "database", "tweets.duckdb")
+    db_path = os.path.join(current_dir, "database", "tweets1.duckdb")
 
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Cannot find DuckDB at: {db_path}")
