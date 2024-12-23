@@ -1,0 +1,7 @@
+streamlit
+pandas
+requests
+ollama
+duckdb
+numpy
+ipykernel
