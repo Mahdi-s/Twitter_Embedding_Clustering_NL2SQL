@@ -10,9 +10,7 @@ This repository focuses on analyzing political tweets (and other thematically-ad
 
 Below is a snapshot of the NL2SQL agentic application in action:
 
-![App Screenshot](images/nl2sql.png.png)
-
-> _If the image doesn't appear, be sure your screenshot is named and referenced correctly in the repo._
+![App Screenshot](./images/nl2sql.png.png)
 
 ---
 
