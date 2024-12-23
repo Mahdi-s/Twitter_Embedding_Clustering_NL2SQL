@@ -9,6 +9,7 @@ This repository focuses on analyzing political tweets (and other thematically-ad
 ## 📸 Quick Glimpse
 
 Below is a snapshot of the NL2SQL agentic application in action:
+Prompted to find top users by tweet count.
 
 ![App Screenshot](./images/nl2sql.png)
 
