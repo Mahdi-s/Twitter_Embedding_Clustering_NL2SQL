@@ -36,7 +36,7 @@ Prompted to find top users by tweet count.
 
 ## 🤖 About the NL2SQL Agent
 
-The **NL2SQL Agent** is an innovative tool that:
+The **NL2SQL Agent** is a tool that:
 - Translates natural language into SQL queries on the fly.
 - Executes those queries against the tweet database to quickly retrieve relevant information.
 - Allows for rapid **exploratory data analysis** without writing raw SQL.
