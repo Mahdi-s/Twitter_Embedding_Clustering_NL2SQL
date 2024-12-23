@@ -3,7 +3,6 @@
 
 Welcome to my submission for the **USC HUMANS Lab Hackathon 2024**!  
 This repository focuses on analyzing political tweets collected from Twitter/X, and demonstrates a pipeline to **extract**, **store**, **query**, and **analyze** the data. 
-In order to test the app create database from sample data, and run the nl1sql app following the guide inside nl2sql folder.
 ---
 
 ## 📸 Quick Glimpse
