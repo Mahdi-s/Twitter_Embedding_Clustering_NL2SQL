@@ -5,3 +5,6 @@ ollama
 duckdb
 numpy
 ipykernel
+scikit-learn
+requests
+plotly
