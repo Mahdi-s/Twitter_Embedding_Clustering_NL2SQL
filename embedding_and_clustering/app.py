@@ -10,6 +10,7 @@ import json
 import os
 import ast
 import re
+import time
 
 # Constants
 DEFAULT_OLLAMA_URL = 'http://localhost:11434'
@@ -40,6 +41,10 @@ def get_ollama_models(ollama_url):
 #   Embeddings & Caching
 ############################
 def get_embeddings(ollama_url, model, texts, csv_filename):
+    """
+    Generate embeddings for the given texts using the specified Ollama model.
+    Includes a per-text progress bar and time estimate.
+    """
     cache_file = os.path.join(CACHE_FOLDER, f"{csv_filename}_{model}.npz")
 
     # Attempt to load from cache
@@ -53,8 +58,16 @@ def get_embeddings(ollama_url, model, texts, csv_filename):
             st.info("Loading embeddings from cache...")
             return cached_embeddings
 
-    # Otherwise compute embeddings
+    st.write("Computing embeddings (this might take a while).")
+
+    # Progress bar & time estimate placeholders
+    embedding_progress_bar = st.progress(0)
+    embedding_time_text = st.empty()
+
     embeddings = []
+    start_time = time.time()
+
+    # Generate embeddings item by item, updating progress & time estimate
     for i, text in enumerate(texts):
         text_str = str(text)
         try:
@@ -74,8 +87,26 @@ def get_embeddings(ollama_url, model, texts, csv_filename):
             st.error(f"Unexpected response format for row {i}: {str(e)}")
             return None
 
+        # Update progress bar
+        current_count = i + 1
+        fraction_done = current_count / len(texts)
+        embedding_progress_bar.progress(fraction_done)
+
+        # Compute average time & estimate how much is left
+        elapsed = time.time() - start_time
+        avg_time_per_text = elapsed / current_count
+        est_remaining = avg_time_per_text * (len(texts) - current_count)
+
+        # Update time-estimate text
+        embedding_time_text.text(
+            f"Embedding {current_count}/{len(texts)} completed. "
+            f"Estimated time remaining: {est_remaining:.2f} seconds."
+        )
+
+    # Convert to NumPy array
     embeddings_array = np.array(embeddings)
 
+    # Save to cache
     np.savez(
         cache_file,
         embeddings=embeddings_array,
@@ -88,9 +119,29 @@ def get_embeddings(ollama_url, model, texts, csv_filename):
 ############################
 #      Summarization
 ############################
-def generate_cluster_summary(ollama_url, model, texts, temperature, prompt_template):
+def generate_cluster_summary(
+    ollama_url,
+    model,
+    texts,
+    temperature,
+    prompt_template,
+    previous_cluster_name=None
+):
+    """
+    Generate a cluster summary, optionally including a previously assigned cluster name as context.
+    """
     first_five_texts_as_strings = [str(t) for t in texts[:5]]
-    prompt = prompt_template.format(texts='\n'.join(first_five_texts_as_strings))
+
+    # Incorporate previous cluster name (if any) into the prompt
+    if previous_cluster_name and previous_cluster_name.strip():
+        prompt = (
+            f"{prompt_template}\n\n"
+            f"Previously, a similar cluster was named: {previous_cluster_name}\n\n"
+            f"Here is the cluster content:\n"
+            f"{''.join(first_five_texts_as_strings)}"
+        )
+    else:
+        prompt = prompt_template.format(texts='\n'.join(first_five_texts_as_strings))
 
     try:
         response = requests.post(
@@ -201,8 +252,6 @@ def create_cluster_summary_table(cluster_labels, texts, cluster_summaries):
     df_summary = pd.DataFrame(cluster_summary)
     return df_summary.sort_values("# of Items", ascending=False).reset_index(drop=True)
 
-import re
-
 def clean_html_tags(text):
     """
     Removes any <...> HTML tags from the string so they do not appear as literal HTML.
@@ -210,10 +259,10 @@ def clean_html_tags(text):
     return re.sub(r'<[^>]*>', '', text)
 
 def create_3d_scatter_plot(
-    reduced_embeddings, 
-    cluster_labels, 
-    cluster_summaries, 
-    texts, 
+    reduced_embeddings,
+    cluster_labels,
+    cluster_summaries,
+    texts,
     summary_table,
     df,
     show_legend=True
@@ -233,7 +282,6 @@ def create_3d_scatter_plot(
 
     def wrap_text(text, width=40):
         """Wrap text to specified width"""
-        # Clean any HTML tags from input text
         text = clean_html_tags(str(text))
         words = text.split()
         lines = []
@@ -270,18 +318,16 @@ def create_3d_scatter_plot(
             cluster_percentage = 0
 
         def make_customdata(row):
-            # Wrap each piece of text
             cluster_name = wrap_text(str(row.get('cluster_name', '')).strip())
             tweet_text = wrap_text(str(row.get('text', '')).strip())
-            
-            # Parse and format the metadata more cleanly
+
             try:
                 metadata = json.loads(str(row.get('user_metadata_str', '{}')).strip())
                 metadata_text = '\n'.join([f"{k}: {v}" for k, v in metadata.items() if v])
                 metadata_text = wrap_text(metadata_text)
             except:
                 metadata_text = ''
-            
+
             return (cluster_name, tweet_text, metadata_text)
 
         cluster_data['customdata'] = cluster_data.apply(make_customdata, axis=1)
@@ -356,6 +402,21 @@ def main():
     st.set_page_config(page_title="TextCluster", page_icon="📊", layout="wide")
     st.title("📊 Embedding & Clustering Experiments")
 
+    # CHANGED: Initialize storage in session_state for final results
+    if 'df' not in st.session_state:
+        st.session_state.df = None
+        st.session_state.embeddings = None
+        st.session_state.cluster_labels = None
+        st.session_state.cluster_summaries = None
+        st.session_state.summary_table = None
+        st.session_state.reduced_embeddings = None
+        st.session_state.selected_texts = None
+        st.session_state.column_index = None
+
+    # Make sure session_state has a place to store old cluster names
+    if 'previous_cluster_names' not in st.session_state:
+        st.session_state.previous_cluster_names = {}
+
     if 'ollama_url' not in st.session_state:
         st.session_state.ollama_url = DEFAULT_OLLAMA_URL
 
@@ -374,7 +435,7 @@ def main():
                     st.error("No Ollama models available. Check your Ollama installation.")
 
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-        
+
         if uploaded_file is not None:
             df = load_csv(uploaded_file)
             st.write(f"Total rows in CSV: {len(df)}")
@@ -388,37 +449,48 @@ def main():
         summary_model = st.selectbox("Select the summary model", embedding_models)
         summary_temperature = st.slider("Summary Temperature", 0.0, 1.0, 0.1, 0.1)
         summary_prompt_template = st.text_area(
-            "Summary Prompt Template", 
-            "You are given a list of tweets about the 2024 US presidential election. "
-            "Based on the raw text for this cluster, come up with a good title. "
-            "DO NOT INCLUDE ANYTHING ELSE and only generate a title:\n\n"
+            "Summary Prompt Template",
+            "You are a highly capable text-summarization assistant. You will be provided with a cluster of tweets "
+            "about the 2024 U.S. presidential election.\n\n"
+            "Your goal is to produce a concise, descriptive title that captures the main theme or topic of those tweets.\n\n"
+            "Important rules and constraints:\n"
+            "1. Output Format: Only produce a short, single-line title.\n"
+            "2. No Extra Text: Do not add disclaimers, explanations, or any other content besides the final title.\n"
+            "3. Relevance: Ensure the title accurately reflects the common theme.\n"
+            "4. Neutrality: Do not inject personal opinions, biases, or speculation.\n"
+            "5. Privacy: Do not include names, usernames, or personal details.\n"
+            "6. Brevity: Keep the title concise (under 15 words, if possible).\n\n"
             "cluster content:\n{texts}"
         )
+
+        
 
         n_clusters = st.slider("Number of clusters", 2, 100, 5)
 
         dim_reduction_algorithms = ["t-SNE", "PCA"]
-        selected_dim_reduction_algorithm = st.selectbox("Select the dimensionality reduction algorithm", dim_reduction_algorithms)
+        selected_dim_reduction_algorithm = st.selectbox(
+            "Select the dimensionality reduction algorithm",
+            dim_reduction_algorithms
+        )
+        tsne_iterations = 1000
         if selected_dim_reduction_algorithm == "t-SNE":
             tsne_iterations = st.slider("t-SNE iterations", 250, 2000, 1000, 50)
 
         show_legend = st.checkbox("Show Legend", value=True)
+
         process_button = st.button("Process")
 
+    # If a CSV is uploaded, preview
     if uploaded_file is not None:
         st.subheader("Preview of the uploaded data:")
         st.dataframe(df.head(5))
         st.write(f"Total rows: {len(df)}")
 
     if process_button and uploaded_file is not None:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
         # 1) Extract texts
         texts = df.iloc[:, column_index].tolist()
 
         # 2) Embeddings
-        status_text.text("Getting embeddings...")
         embeddings = get_embeddings(
             st.session_state.ollama_url,
             selected_embedding_model,
@@ -429,25 +501,56 @@ def main():
             st.error("Failed to get embeddings. Stopping.")
             return
 
-        progress_bar.progress(25)
-        status_text.text("Performing clustering...")
-        cluster_labels = perform_clustering(embeddings, n_clusters)
+        #st.success("Embeddings step complete!")
 
-        progress_bar.progress(50)
-        status_text.text("Generating cluster summaries...")
+        # 3) Clustering
+        st.write("Performing clustering...")
+        cluster_labels = perform_clustering(embeddings, n_clusters)
+        #st.success("Clustering step complete!")
+
+        # 4) Summaries
+        st.write("Generating cluster summaries...")
         unique_labels = sorted(set(cluster_labels))
         cluster_summaries = {}
-        for label in unique_labels:
-            cluster_texts = [texts[i] for i, l in enumerate(cluster_labels) if l == label]
+
+        summary_progress_bar = st.progress(0)
+        summary_time_text = st.empty()
+        start_time = time.time()
+
+        for i, label in enumerate(unique_labels):
+            cluster_texts = [texts[idx] for idx, lbl in enumerate(cluster_labels) if lbl == label]
+            previous_name = st.session_state.previous_cluster_names.get(label, "")
+
+            # Generate the summary
             summary = generate_cluster_summary(
                 st.session_state.ollama_url,
                 summary_model,
                 cluster_texts,
                 summary_temperature,
-                summary_prompt_template
+                summary_prompt_template,
+                previous_cluster_name=previous_name
             )
-            cluster_summaries[label] = summary
 
+            # Save & store
+            cluster_summaries[label] = summary
+            st.session_state.previous_cluster_names[label] = summary
+
+            # Update progress
+            current_count = i + 1
+            fraction_done = current_count / len(unique_labels)
+            summary_progress_bar.progress(fraction_done)
+
+            elapsed = time.time() - start_time
+            avg_time_per_cluster = elapsed / current_count
+            est_remaining = avg_time_per_cluster * (len(unique_labels) - current_count)
+            summary_time_text.text(
+                f"Summaries {current_count}/{len(unique_labels)} complete. "
+                f"Estimated time remaining: {est_remaining:.2f} seconds."
+            )
+
+        #st.success("Cluster summaries step complete!")
+
+        # 5) Create summary table
         summary_table = create_cluster_summary_table(cluster_labels, texts, cluster_summaries)
         st.subheader("Cluster Summary")
         st.table(summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
@@ -455,8 +558,8 @@ def main():
         df['cluster_label'] = cluster_labels
         df['cluster_name'] = df['cluster_label'].apply(lambda c: cluster_summaries.get(c, "Unknown Cluster"))
 
-        progress_bar.progress(75)
-        status_text.text("Performing dimensionality reduction...")
+        # 6) Dimensionality reduction
+        st.write("Performing dimensionality reduction...")
         dim_reduction_params = {}
         if selected_dim_reduction_algorithm == "t-SNE":
             dim_reduction_params['n_iter'] = tsne_iterations
@@ -466,23 +569,37 @@ def main():
             selected_dim_reduction_algorithm,
             **dim_reduction_params
         )
+        #st.success(f"{selected_dim_reduction_algorithm} reduction complete!")
 
-        progress_bar.progress(100)
-        status_text.text("Creating visualization...")
+        # CHANGED: Store results in session_state so we can re-display later
+        st.session_state.df = df
+        st.session_state.embeddings = embeddings
+        st.session_state.cluster_labels = cluster_labels
+        st.session_state.cluster_summaries = cluster_summaries
+        st.session_state.summary_table = summary_table
+        st.session_state.reduced_embeddings = reduced_embeddings
+        st.session_state.selected_texts = texts
+        st.session_state.column_index = column_index
 
+    # NEW: If we have stored results, display them again (including summary table!)
+    if st.session_state.df is not None and st.session_state.summary_table is not None:
+        st.subheader("Cluster Summary")  # Always show table
+        st.table(st.session_state.summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
+
+        st.write("### 3D Visualization")
         fig = create_3d_scatter_plot(
-            reduced_embeddings,
-            cluster_labels,
-            cluster_summaries,
-            texts,
-            summary_table,
-            df,
-            show_legend=show_legend
+            st.session_state.reduced_embeddings,
+            st.session_state.cluster_labels,
+            st.session_state.cluster_summaries,
+            st.session_state.selected_texts,
+            st.session_state.summary_table,
+            st.session_state.df,
+            show_legend=show_legend  # This will update on toggle without re-processing
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        status_text.text("Processing complete!")
-        progress_bar.empty()
+        #st.success("All steps complete!")
+
 
 if __name__ == "__main__":
     main()
