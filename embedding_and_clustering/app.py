@@ -288,9 +288,9 @@ def create_3d_scatter_plot(
         cluster_color = color_discrete_map[label]
 
         hover_template = (
-            "Cluster: %{customdata[0]}<br><br>" +
-            "Tweet text: %{customdata[1]}<br><br>" +
-            "Tweet Metadata: %{customdata[2]}" +
+            "<b>Cluster:</b> %{customdata[0]}<br><br>" +
+            "<b>Tweet text:</b> %{customdata[1]}<br><br>" +
+            "<b>Tweet Metadata:</b> %{customdata[2]}" +
             "<extra></extra>"
         )
 
