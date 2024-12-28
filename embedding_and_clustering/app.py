@@ -265,7 +265,8 @@ def create_3d_scatter_plot(
     texts,
     summary_table,
     df,
-    show_legend=True
+    show_legend=True,
+    dot_size=5  # <-- NEW PARAM for controlling marker size
 ):
     df_plot = df.copy()
     df_plot['x'] = reduced_embeddings[:, 0]
@@ -333,12 +334,17 @@ def create_3d_scatter_plot(
         cluster_data['customdata'] = cluster_data.apply(make_customdata, axis=1)
         cluster_color = color_discrete_map[label]
 
-        hover_template = (
-            "<b>Cluster:</b> %{customdata[0]}<br><br>" +
-            "<b>Tweet text:</b> %{customdata[1]}<br><br>" +
-            "<b>Tweet Metadata:</b> %{customdata[2]}" +
-            "<extra></extra>"
-        )
+        hover_template = """
+        <b>Cluster Name:</b><br>
+        %{customdata[0]}
+        <br>-----------------------------------<br>
+        <b>Tweet Text:</b><br>
+        %{customdata[1]}
+        <br>-----------------------------------<br>
+        <b>Tweet Metadata:</b><br>
+        %{customdata[2]}
+        <extra></extra>
+        """
 
         fig.add_trace(go.Scatter3d(
             x=cluster_data['x'],
@@ -346,7 +352,7 @@ def create_3d_scatter_plot(
             z=cluster_data['z'],
             mode='markers',
             marker=dict(
-                size=5,
+                size=dot_size,  # <-- Use the user-selected dot size here
                 color=cluster_color,
                 opacity=0.8
             ),
@@ -457,13 +463,10 @@ def main():
             "1. Output Format: Only produce a short, single-line title.\n"
             "2. No Extra Text: Do not add disclaimers, explanations, or any other content besides the final title.\n"
             "3. Relevance: Ensure the title accurately reflects the common theme.\n"
-            "4. Neutrality: Do not inject personal opinions, biases, or speculation.\n"
-            "5. Privacy: Do not include names, usernames, or personal details.\n"
-            "6. Brevity: Keep the title concise (under 15 words, if possible).\n\n"
+            "4. IF content is inappropriate label it Harmful.\n\n"
+            "5. Brevity: Keep the title concise (under 15 words).\n\n"
             "cluster content:\n{texts}"
         )
-
-        
 
         n_clusters = st.slider("Number of clusters", 2, 100, 5)
 
@@ -477,6 +480,9 @@ def main():
             tsne_iterations = st.slider("t-SNE iterations", 250, 2000, 1000, 50)
 
         show_legend = st.checkbox("Show Legend", value=True)
+        
+        # NEW: Slider for dot size
+        dot_size = st.slider("Dot Size", 1, 20, 5, 1)
 
         process_button = st.button("Process")
 
@@ -501,12 +507,9 @@ def main():
             st.error("Failed to get embeddings. Stopping.")
             return
 
-        #st.success("Embeddings step complete!")
-
         # 3) Clustering
         st.write("Performing clustering...")
         cluster_labels = perform_clustering(embeddings, n_clusters)
-        #st.success("Clustering step complete!")
 
         # 4) Summaries
         st.write("Generating cluster summaries...")
@@ -548,18 +551,16 @@ def main():
                 f"Estimated time remaining: {est_remaining:.2f} seconds."
             )
 
-        #st.success("Cluster summaries step complete!")
-
         # 5) Create summary table
         summary_table = create_cluster_summary_table(cluster_labels, texts, cluster_summaries)
-        st.subheader("Cluster Summary")
-        st.table(summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
+        # st.subheader("Cluster Summary")
+        # st.table(summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
 
         df['cluster_label'] = cluster_labels
         df['cluster_name'] = df['cluster_label'].apply(lambda c: cluster_summaries.get(c, "Unknown Cluster"))
 
         # 6) Dimensionality reduction
-        st.write("Performing dimensionality reduction...")
+        #st.write("Performing dimensionality reduction...")
         dim_reduction_params = {}
         if selected_dim_reduction_algorithm == "t-SNE":
             dim_reduction_params['n_iter'] = tsne_iterations
@@ -569,7 +570,6 @@ def main():
             selected_dim_reduction_algorithm,
             **dim_reduction_params
         )
-        #st.success(f"{selected_dim_reduction_algorithm} reduction complete!")
 
         # CHANGED: Store results in session_state so we can re-display later
         st.session_state.df = df
@@ -581,7 +581,7 @@ def main():
         st.session_state.selected_texts = texts
         st.session_state.column_index = column_index
 
-    # NEW: If we have stored results, display them again (including summary table!)
+    # If we have stored results, display them again (including summary table!)
     if st.session_state.df is not None and st.session_state.summary_table is not None:
         st.subheader("Cluster Summary")  # Always show table
         st.table(st.session_state.summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
@@ -594,11 +594,10 @@ def main():
             st.session_state.selected_texts,
             st.session_state.summary_table,
             st.session_state.df,
-            show_legend=show_legend  # This will update on toggle without re-processing
+            show_legend=show_legend,
+            dot_size=dot_size  # <-- Pass the user-selected dot size here
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        #st.success("All steps complete!")
 
 
 if __name__ == "__main__":
