@@ -1,6 +1,13 @@
 
 # 🤖 Tweet Analyzer Setup Guide
 
+## 📸 Quick Glimpse
+
+Below is a snapshot of the NL2SQL agentic application in action:
+Prompted to find top users by tweet count.
+
+![App Screenshot](./images/nl2sql.png)
+
 ## 📋 Prerequisites
 - Python 3.8 or higher
 - Ollama installed and running locally

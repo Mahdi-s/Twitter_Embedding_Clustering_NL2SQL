@@ -10,10 +10,11 @@ This repository focuses on analyzing political tweets collected from Twitter/X, 
 
 ## 📸 Quick Glimpse
 
-Below is a snapshot of the NL2SQL agentic application in action:
-Prompted to find top users by tweet count.
+Below is a demo of the embedding and clustering experiment in action:
 
-![App Screenshot](./images/nl2sql.png)
+
+[![Demo Video](https://img.youtube.com/vi/sD0ibVYFg4c/0.jpg)](https://www.youtube.com/watch?v=sD0ibVYFg4c)
+
 
 ---
 
@@ -29,8 +30,18 @@ Prompted to find top users by tweet count.
    - A folder containing an AI-powered agent that converts **natural language** queries into **SQL**.  
    - For setup and usage instructions, please read the dedicated `README.md` inside this folder.
 
-4. **`scope.pdf`**  
+4. **`embedding_and_clustering/`**
+   - Interactive visualization tool for exploring tweet clusters using embeddings
+   - Features:
+     - Real-time embedding generation using Ollama models
+     - Dynamic clustering with adjustable parameters
+     - Interactive 3D visualization of tweet clusters
+     - Automatic cluster summarization and labeling
+     - Caching system for faster subsequent runs
+
+5. **`scope.pdf`**  
    - A brief **project scope** outline describing the goals, approach, and potential future directions.
+
 
 ---
 
@@ -45,6 +56,20 @@ For a detailed guide on installation and usage, head to the [`nl2sql_agent` fold
 
 ---
 
+## 📊 About the Embedding & Clustering Tool
+
+The **Embedding & Clustering Tool** enables:
+- Generation of tweet embeddings using any Ollama-compatible model
+- Automatic clustering of similar tweets
+- Interactive 3D visualization with detailed hover information
+- AI-powered cluster summarization and labeling
+- Performance optimizations through caching
+
+For detailed setup and usage, check the [`embedding_and_clustering` folder](./embedding_and_clustering/README.md).
+
+
+---
+
 ## 💡 How It Works
 
 1. **Data Extraction**  
@@ -55,6 +80,17 @@ For a detailed guide on installation and usage, head to the [`nl2sql_agent` fold
    
 3. **Natural Language Queries**  
    Interact with the `nl2sql_agent/` to seamlessly query the database using English prompts.
+
+4. **Embedding & Clustering Analysis**
+   - **Generate Embeddings**: Convert tweets into vector representations using Ollama models
+   - **Cluster Formation**: Group similar tweets using k-means clustering
+   - **Visualization**: Explore clusters in an interactive 3D space
+   - **Insights**: 
+     - Hover over points to read tweet content
+     - View AI-generated cluster summaries
+     - Adjust clustering parameters in real-time
+     - Export findings for further analysis
+
 
 ---
 
@@ -72,6 +108,9 @@ This approach offers a glimpse into how modern NLP and database management can h
 ## 🫶 Notable Resources Utilizes:
 
 - **Streamlit:** Ease creation of user interface.
-- **Ollama:** For loading models and utilizing tool calling. 
+- **Ollama:** For loading models and utilizing tool calling.
+- **Plotly:** Interactive 3D visualization of tweet clusters.
+- **scikit-learn:** Clustering and dimensionality reduction.
+- **Generative AI:** Portions of the code in this repo was generated using AI.
 
 ---
