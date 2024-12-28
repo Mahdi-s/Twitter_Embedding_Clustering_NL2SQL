@@ -19,6 +19,31 @@ CACHE_FOLDER = "embeddings_cache"
 os.makedirs(CACHE_FOLDER, exist_ok=True)
 
 ############################
+#   Time Formatting Helper
+############################
+def format_time(seconds):
+    """
+    Convert a float of seconds into a string of the form 'H hours, M minutes, S seconds'.
+    Only shows non-zero components. If total time < 1 second, show '0 seconds'.
+    """
+    seconds = int(seconds)
+    if seconds <= 0:
+        return "0 seconds"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    time_str_parts = []
+    if hours > 0:
+        time_str_parts.append(f"{hours} hours")
+    if minutes > 0:
+        time_str_parts.append(f"{minutes} minutes")
+    if secs > 0:
+        time_str_parts.append(f"{secs} seconds")
+
+    return ", ".join(time_str_parts)
+
+############################
 #        Ollama API
 ############################
 def check_ollama_connection(ollama_url):
@@ -97,10 +122,11 @@ def get_embeddings(ollama_url, model, texts, csv_filename):
         avg_time_per_text = elapsed / current_count
         est_remaining = avg_time_per_text * (len(texts) - current_count)
 
-        # Update time-estimate text
+        # Update time-estimate text (using format_time)
+        est_remaining_str = format_time(est_remaining)
         embedding_time_text.text(
             f"Embedding {current_count}/{len(texts)} completed. "
-            f"Estimated time remaining: {est_remaining:.2f} seconds."
+            f"Estimated time remaining: {est_remaining_str}"
         )
 
     # Convert to NumPy array
@@ -266,7 +292,7 @@ def create_3d_scatter_plot(
     summary_table,
     df,
     show_legend=True,
-    dot_size=5  # <-- NEW PARAM for controlling marker size
+    dot_size=5
 ):
     df_plot = df.copy()
     df_plot['x'] = reduced_embeddings[:, 0]
@@ -324,25 +350,34 @@ def create_3d_scatter_plot(
 
             try:
                 metadata = json.loads(str(row.get('user_metadata_str', '{}')).strip())
-                metadata_text = '\n'.join([f"{k}: {v}" for k, v in metadata.items() if v])
-                metadata_text = wrap_text(metadata_text)
+                metadata_tuple = (
+                    metadata.get('username', ''),
+                    wrap_text(metadata.get('rawDescription', ''), width=50), 
+                    metadata.get('followersCount', ''),
+                    metadata.get('location', ''),
+                    metadata.get('favouritesCount', '')
+                )
             except:
-                metadata_text = ''
+                metadata_tuple = ('', '', '', '', '')
 
-            return (cluster_name, tweet_text, metadata_text)
-
+            return (cluster_name, tweet_text, metadata_tuple)
+        
         cluster_data['customdata'] = cluster_data.apply(make_customdata, axis=1)
         cluster_color = color_discrete_map[label]
 
         hover_template = """
         <b>Cluster Name:</b><br>
         %{customdata[0]}
-        <br>-----------------------------------<br>
+        <br><span style='color: white'>━━━━━━━━━━━━━━━━━━━━━━━━</span><br>
         <b>Tweet Text:</b><br>
         %{customdata[1]}
-        <br>-----------------------------------<br>
+        <br><span style='color: white'>━━━━━━━━━━━━━━━━━━━━━━━━</span><br>
         <b>Tweet Metadata:</b><br>
-        %{customdata[2]}
+        Username: %{customdata[2][0]}<br>
+        Bio: %{customdata[2][1]}<br>
+        Followers: %{customdata[2][2]}<br>
+        Location: %{customdata[2][3]}<br>
+        Favorites: %{customdata[2][4]}
         <extra></extra>
         """
 
@@ -352,7 +387,7 @@ def create_3d_scatter_plot(
             z=cluster_data['z'],
             mode='markers',
             marker=dict(
-                size=dot_size,  # <-- Use the user-selected dot size here
+                size=dot_size,
                 color=cluster_color,
                 opacity=0.8
             ),
@@ -546,21 +581,21 @@ def main():
             elapsed = time.time() - start_time
             avg_time_per_cluster = elapsed / current_count
             est_remaining = avg_time_per_cluster * (len(unique_labels) - current_count)
+
+            # Use format_time here as well
+            est_remaining_str = format_time(est_remaining)
             summary_time_text.text(
                 f"Summaries {current_count}/{len(unique_labels)} complete. "
-                f"Estimated time remaining: {est_remaining:.2f} seconds."
+                f"Estimated time remaining: {est_remaining_str}"
             )
 
         # 5) Create summary table
         summary_table = create_cluster_summary_table(cluster_labels, texts, cluster_summaries)
-        # st.subheader("Cluster Summary")
-        # st.table(summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
 
         df['cluster_label'] = cluster_labels
         df['cluster_name'] = df['cluster_label'].apply(lambda c: cluster_summaries.get(c, "Unknown Cluster"))
 
         # 6) Dimensionality reduction
-        #st.write("Performing dimensionality reduction...")
         dim_reduction_params = {}
         if selected_dim_reduction_algorithm == "t-SNE":
             dim_reduction_params['n_iter'] = tsne_iterations
@@ -571,7 +606,7 @@ def main():
             **dim_reduction_params
         )
 
-        # CHANGED: Store results in session_state so we can re-display later
+        # Store results in session_state so we can re-display later
         st.session_state.df = df
         st.session_state.embeddings = embeddings
         st.session_state.cluster_labels = cluster_labels
@@ -583,7 +618,7 @@ def main():
 
     # If we have stored results, display them again (including summary table!)
     if st.session_state.df is not None and st.session_state.summary_table is not None:
-        st.subheader("Cluster Summary")  # Always show table
+        st.subheader("Cluster Summary")
         st.table(st.session_state.summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
 
         st.write("### 3D Visualization")
@@ -595,7 +630,7 @@ def main():
             st.session_state.summary_table,
             st.session_state.df,
             show_legend=show_legend,
-            dot_size=dot_size  # <-- Pass the user-selected dot size here
+            dot_size=dot_size
         )
         st.plotly_chart(fig, use_container_width=True)
 

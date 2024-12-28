@@ -1,6 +1,5 @@
 venv/
-embedding_and_clustering/embeddings_cache/
-
+embeddings_cache/
 *.duckdb
 *.zip
 *.csv
