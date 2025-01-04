@@ -1,4 +1,5 @@
 venv/
+usc/
 embeddings_cache/
 *.duckdb
 *.zip
