@@ -11,6 +11,7 @@ import os
 import ast
 import re
 import time
+import duckdb  # Make sure to install duckdb (pip install duckdb)
 
 # Constants
 DEFAULT_OLLAMA_URL = 'http://localhost:11434'
@@ -65,12 +66,12 @@ def get_ollama_models(ollama_url):
 ############################
 #   Embeddings & Caching
 ############################
-def get_embeddings(ollama_url, model, texts, csv_filename):
+def get_embeddings(ollama_url, model, texts, cache_prefix):
     """
     Generate embeddings for the given texts using the specified Ollama model.
     Includes a per-text progress bar and time estimate.
     """
-    cache_file = os.path.join(CACHE_FOLDER, f"{csv_filename}_{model}.npz")
+    cache_file = os.path.join(CACHE_FOLDER, f"{cache_prefix}_{model}.npz")
 
     # Attempt to load from cache
     if os.path.exists(cache_file):
@@ -191,52 +192,16 @@ def generate_cluster_summary(
         return "Failed to generate summary"
 
 ############################
-#   Data Loading & Caching
+#   Data Loading (DuckDB)
 ############################
-@st.cache_data
-def load_csv(file):
-    df = pd.read_csv(file)
-
-    if 'user' in df.columns:
-        def parse_user(x):
-            if pd.isna(x) or not isinstance(x, str):
-                return {}
-            # Remove any occurrences of "datetime.datetime(...)" text
-            pattern = r"'created': datetime\.datetime\([^)]*\)"
-            cleaned = re.sub(pattern, "", x)
-            # Also remove potential trailing commas if they remain
-            cleaned = re.sub(r",(\s*,)+", ",", cleaned)
-            cleaned = re.sub(r",\s*\}", "}", cleaned)
-            cleaned = re.sub(r"\{\s*,", "{", cleaned)
-            try:
-                data = ast.literal_eval(cleaned)
-                if 'created' in data:
-                    del data['created']
-                return data
-            except:
-                return {}
-
-        df['user_dict'] = df['user'].apply(parse_user)
-
-        def make_user_metadata_str(d):
-            username = d.get('username', '')
-            rawDescription = d.get('rawDescription', '')
-            followersCount = d.get('followersCount', 0)
-            location = d.get('location', '')
-            favouritesCount = d.get('favouritesCount', 0)
-            meta = {
-                'username': username,
-                'rawDescription': rawDescription,
-                'followersCount': followersCount,
-                'location': location,
-                'favouritesCount': favouritesCount
-            }
-            return json.dumps(meta, indent=2)
-
-        df['user_metadata_str'] = df['user_dict'].apply(make_user_metadata_str)
-    else:
-        df['user_metadata_str'] = ""
-
+def load_data_from_duckdb(db_path, table_name, limit):
+    """
+    Connect to a DuckDB database and load a specified number of rows from a given table.
+    Returns a Pandas DataFrame.
+    """
+    con = duckdb.connect(db_path, read_only=True)
+    df = con.execute(f"SELECT * FROM {table_name} LIMIT {limit}").df()
+    con.close()
     return df
 
 ############################
@@ -452,7 +417,7 @@ def main():
         st.session_state.summary_table = None
         st.session_state.reduced_embeddings = None
         st.session_state.selected_texts = None
-        st.session_state.column_index = None
+        st.session_state.column_name = None
 
     # Make sure session_state has a place to store old cluster names
     if 'previous_cluster_names' not in st.session_state:
@@ -475,19 +440,29 @@ def main():
                 if not models:
                     st.error("No Ollama models available. Check your Ollama installation.")
 
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+        st.subheader("DuckDB Configuration")
+        db_path = "/Volumes/T7/tweets_test_crashed.duckdb"
+        # Provide a spot for user to confirm the table name
+        table_name = st.text_input("DuckDB Table Name", "tweets_table")  
+        row_limit = st.number_input("Number of rows to load", min_value=1, max_value=1_000_000, value=1000, step=100)
+        
+        load_data_button = st.button("Load Data from DuckDB")
 
-        if uploaded_file is not None:
-            df = load_csv(uploaded_file)
-            st.write(f"Total rows in CSV: {len(df)}")
-            column_options = [f"{i}: {col}" for i, col in enumerate(df.columns)]
-            selected_column = st.selectbox("Select the text column to embed", column_options)
-            column_index = int(selected_column.split(":")[0])
+        # Select the text column AFTER data is loaded
+        selected_column_name = None
+        if st.session_state.df is not None:
+            col_options = list(st.session_state.df.columns)
+            selected_column_name = st.selectbox("Select the text column", col_options)
 
-        embedding_models = get_ollama_models(st.session_state.ollama_url)
-        selected_embedding_model = st.selectbox("Select the embedding model", embedding_models)
+        embedding_models = []
+        summary_model = None
+        if check_ollama_connection(st.session_state.ollama_url):
+            embedding_models = get_ollama_models(st.session_state.ollama_url)
+            selected_embedding_model = st.selectbox("Select the embedding model", embedding_models)
+            summary_model = st.selectbox("Select the summary model", embedding_models)
+        else:
+            selected_embedding_model = None
 
-        summary_model = st.selectbox("Select the summary model", embedding_models)
         summary_temperature = st.slider("Summary Temperature", 0.0, 1.0, 0.1, 0.1)
         summary_prompt_template = st.text_area(
             "Summary Prompt Template",
@@ -515,28 +490,37 @@ def main():
             tsne_iterations = st.slider("t-SNE iterations", 250, 2000, 1000, 50)
 
         show_legend = st.checkbox("Show Legend", value=True)
-        
-        # NEW: Slider for dot size
         dot_size = st.slider("Dot Size", 1, 20, 5, 1)
 
         process_button = st.button("Process")
 
-    # If a CSV is uploaded, preview
-    if uploaded_file is not None:
-        st.subheader("Preview of the uploaded data:")
-        st.dataframe(df.head(5))
-        st.write(f"Total rows: {len(df)}")
+    # Step 1: Load data from DuckDB if requested
+    if load_data_button:
+        with st.spinner("Loading data from DuckDB..."):
+            try:
+                st.session_state.df = load_data_from_duckdb(db_path, table_name, row_limit)
+                st.success(f"Loaded {len(st.session_state.df)} rows from {table_name}")
+            except Exception as e:
+                st.error(f"Error loading from DuckDB: {e}")
+                st.session_state.df = None
 
-    if process_button and uploaded_file is not None:
-        # 1) Extract texts
-        texts = df.iloc[:, column_index].tolist()
+    # Show a preview if we have data
+    if st.session_state.df is not None:
+        st.subheader("Preview of the Loaded Data:")
+        st.dataframe(st.session_state.df.head(5))
+        st.write(f"Total rows: {len(st.session_state.df)}")
 
-        # 2) Embeddings
+    # Step 2: When 'Process' is clicked, run embeddings/clustering pipeline
+    if process_button and st.session_state.df is not None and selected_column_name:
+        # Extract texts from the chosen column
+        texts = st.session_state.df[selected_column_name].tolist()
+
+        # 2) Generate embeddings
         embeddings = get_embeddings(
             st.session_state.ollama_url,
             selected_embedding_model,
             texts,
-            csv_filename=uploaded_file.name
+            cache_prefix=f"{table_name}_{row_limit}"
         )
         if embeddings is None or len(embeddings) == 0:
             st.error("Failed to get embeddings. Stopping.")
@@ -592,8 +576,11 @@ def main():
         # 5) Create summary table
         summary_table = create_cluster_summary_table(cluster_labels, texts, cluster_summaries)
 
-        df['cluster_label'] = cluster_labels
-        df['cluster_name'] = df['cluster_label'].apply(lambda c: cluster_summaries.get(c, "Unknown Cluster"))
+        # Augment DataFrame with clustering info
+        st.session_state.df['cluster_label'] = cluster_labels
+        st.session_state.df['cluster_name'] = st.session_state.df['cluster_label'].apply(
+            lambda c: cluster_summaries.get(c, "Unknown Cluster")
+        )
 
         # 6) Dimensionality reduction
         dim_reduction_params = {}
@@ -607,17 +594,20 @@ def main():
         )
 
         # Store results in session_state so we can re-display later
-        st.session_state.df = df
         st.session_state.embeddings = embeddings
         st.session_state.cluster_labels = cluster_labels
         st.session_state.cluster_summaries = cluster_summaries
         st.session_state.summary_table = summary_table
         st.session_state.reduced_embeddings = reduced_embeddings
         st.session_state.selected_texts = texts
-        st.session_state.column_index = column_index
+        st.session_state.column_name = selected_column_name
 
-    # If we have stored results, display them again (including summary table!)
-    if st.session_state.df is not None and st.session_state.summary_table is not None:
+    # Step 3: If we have stored results, display them
+    if (
+        st.session_state.df is not None 
+        and st.session_state.summary_table is not None 
+        and st.session_state.reduced_embeddings is not None
+    ):
         st.subheader("Cluster Summary")
         st.table(st.session_state.summary_table[['Cluster Title', '# of Items', 'Percentage', 'Examples']])
 
