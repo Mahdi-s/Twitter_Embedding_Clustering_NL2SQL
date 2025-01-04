@@ -441,7 +441,7 @@ def main():
                     st.error("No Ollama models available. Check your Ollama installation.")
 
         st.subheader("DuckDB Configuration")
-        db_path = "/Volumes/T7/tweets_test_crashed.duckdb"
+        db_path = "C:/Users/Saeed/repos/USC_hacketon/tweets2.duckdb"
         # Provide a spot for user to confirm the table name
         table_name = st.text_input("DuckDB Table Name", "tweets_table")  
         row_limit = st.number_input("Number of rows to load", min_value=1, max_value=1_000_000, value=1000, step=100)
