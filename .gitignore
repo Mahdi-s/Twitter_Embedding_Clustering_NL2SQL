@@ -6,3 +6,4 @@ embeddings_cache/
 *.csv
 *.npz
 embedding_and_clustering/embeddings_cache/sampled_tweets_s.csv_nomic-embed-text:latest.npz
+.wal

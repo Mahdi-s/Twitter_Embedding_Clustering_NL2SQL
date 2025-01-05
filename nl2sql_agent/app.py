@@ -8,85 +8,90 @@ import asyncio
 from typing import Dict, Any
 import os
 import time
+import re
 
-# ---------------------------------------------------------------------
-#                    Streamlit / App Configuration
-# ---------------------------------------------------------------------
 st.set_page_config(page_title='Tweet Analyzer', layout='wide')
 
 if 'chat_history' not in st.session_state:
     st.session_state['chat_history'] = []
 
+##############################################################################
+# HELPER: EXTRACT JSON FROM OLLAMA'S "Message(role='assistant', content='...')"
+##############################################################################
+def extract_json_from_message_string(message_str: str) -> dict:
+    """
+    Attempts to extract and parse JSON from the 'content' of Ollama's
+    response string or dict. If no valid JSON is found, returns {}.
+    """
+    # If it's already a dict from Ollama's python client, just get the content
+    if isinstance(message_str, dict):
+        content = message_str.get('content', '')
+    else:
+        # Try to extract content from string representation
+        match = re.search(r"content='([^']*)'", str(message_str), re.DOTALL)
+        content = match.group(1) if match else str(message_str)
+
+    # Remove markdown code blocks and JSON markers
+    content = re.sub(r'```(?:json)?\n?(.*?)\n?```', r'\1', content, flags=re.DOTALL)
+    content = content.strip()
+
+    # Try multiple JSON parsing approaches
+    try:
+        # First attempt: direct JSON parse
+        return json.loads(content)
+    except json.JSONDecodeError:
+        try:
+            # Second attempt: find JSON-like structure within the text
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        
+        # If all parsing attempts fail, return empty dict
+        return {}
+
+
+##############################################################################
+# SYSTEM PROMPT
+##############################################################################
 SYSTEM_PROMPT = """
-You are a data analysis assistant with access to a DuckDB table named 'tweets'. 
-Below is the schema of 'tweets' (from DESCRIBE tweets):
+You have access to a single DuckDB table called 'tweets' with the following schema:
 
 {columns_info}
 
-Your tasks:
+You can respond to the user in one of two ways:
 
-1. **Analyze the user's question** and decide if you need to execute one or more SQL queries against the 'tweets' table. 
-   - You must only reference this 'tweets' table (no other tables exist).
-   - Use the column names exactly as they appear above.
-   - If the question is ambiguous or impossible to answer, explain that in your final answer.
-
-2. If you need to run an SQL query, you MUST provide a function call in valid JSON with:
-   - `"name": "execute_sql_query"`
-   - `"arguments": {{ "query": "<YOUR_SQL_QUERY>" }}`
-   
-   Example function call:
-   ```json
+1. If the user question requires a query to the 'tweets' table, respond with a JSON function call:
    {{
      "name": "execute_sql_query",
      "arguments": {{
-       "query": "SELECT * FROM tweets LIMIT 5"
+       "query": "SELECT ... "
      }}
    }}
-   ```
 
-Do not include any extra text or formatting in that JSON.
-After you receive the function-call result (the query results), you can provide a final answer as role=assistant, with your explanation/analysis. This final answer should refer to the query results if needed to answer the user's question.
+2. If no SQL query is needed, provide a short direct textual answer.
 
-Do not output any Python or other code besides the JSON function call. If no SQL query is needed, just provide a direct final textual answer as role=assistant.
-
-Do not add or remove columns arbitrarily; you only have the columns listed in the schema above.
-
-The user says: {user_query}
+Do not provide any other text when you produce the JSON function call.
+Use only the columns exactly as they appear in the schema above.
 """
 
-# ---------------------------------------------------------------------
-#                    DuckDB Connection & SQL Execution
-# ---------------------------------------------------------------------
+##############################################################################
+# DUCKDB CONNECTION & EXECUTION
+##############################################################################
 @st.cache_resource
 def get_db_connection():
-    """
-    Creates (and caches) a DuckDB connection in read-only mode
-    to the actual 'tweets.duckdb' that contains your real data.
-    """
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(current_dir, "database", "tweets1.duckdb")
+    db_path = os.path.join(current_dir, "../tweets2.duckdb")
 
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Cannot find DuckDB at: {db_path}")
 
     try:
-        # Initialize connection with 'tweets' table, adding access_mode parameter
         con = duckdb.connect(db_path, read_only=True, config={'access_mode': 'READ_ONLY'})
-        
-        # Add retry logic for lock conflicts
-        max_retries = 3
-        retry_delay = 1  # seconds
-        
-        for attempt in range(max_retries):
-            try:
-                test_query = con.execute("SELECT COUNT(*) FROM tweets").fetchone()[0]
-                #st.write(f"DEBUG: Successfully connected to database. Found {test_query} tweets.")
-                return con
-            except duckdb.IOException as lock_error:
-                if "lock" in str(lock_error).lower() and attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                raise
+        # Quick check
+        test_query = con.execute("SELECT COUNT(*) FROM tweets").fetchone()[0]
+        return con
     except duckdb.CatalogException:
         st.error("The 'tweets' table was not found in the database. Please check your database setup.")
         raise
@@ -95,57 +100,42 @@ def get_db_connection():
         raise
 
 def execute_sql_query(query: str) -> str:
-    """
-    Execute the given SQL query against the 'tweets' table in DuckDB.
-    Return JSON-serialized rows.
-    """
-    #st.write("DEBUG: About to execute SQL ->", query)
     try:
         con = get_db_connection()
         df = con.execute(query).df()
-        #st.write("DEBUG: Query executed successfully. Rows/Cols:", df.shape)
         return json.dumps(df.to_dict(orient='records'))
     except Exception as e:
-        #st.write(f"DEBUG: Error executing query -> {e}")
         return json.dumps({"error": str(e)})
 
-# ---------------------------------------------------------------------
-#                   Ollama LLM Interaction
-# ---------------------------------------------------------------------
+##############################################################################
+# OLLAMA LLM INTERACTION
+##############################################################################
 async def ai_agent_interaction(query: str, model_name: str, temperature: float) -> Dict[str, Any]:
     """
-    1. Provide the LLM with the actual table schema, specifying that the table is called "tweets".
-    2. Let it generate a function call with a query (execute_sql_query).
-    3. Execute that query, return the final response plus query results.
+    1. Provide the LLM with the table schema as system prompt.
+    2. If the model needs to query, it will return a JSON function call in 'content' or in 'tool_calls'.
+    3. Parse that JSON, execute the SQL, then call Ollama a second time for final text if needed.
     """
+
     client = ollama.AsyncClient()
 
-    # Grab current schema from DuckDB
+    # Build system prompt with the table schema
     con = get_db_connection()
     schema_df = con.execute("DESCRIBE tweets").df()
-    # Turn the DESCRIBE results into a string
     columns_info = schema_df.to_string(index=False)
 
-    # Build our final system prompt by substituting the {columns_info} and {query} placeholders
-    system_prompt = SYSTEM_PROMPT.format(
-        columns_info=columns_info,
-        user_query=query
-    )
-
-    # DEBUG: Show what we’re sending to the model
-    #st.write("DEBUG: System Prompt ->", system_prompt)
-
-    # Prepare messages
+    system_prompt = SYSTEM_PROMPT.format(columns_info=columns_info)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": query},
     ]
 
-    # First request to Ollama: may produce a function_call
+    # ----------------------------------------------------------------------
+    # FIRST CALL: Get potential tool call or direct text
+    # ----------------------------------------------------------------------
     response = await client.chat(
         model=model_name,
         messages=messages,
-        options={"temperature": temperature},
         tools=[{
             "type": "function",
             "function": {
@@ -162,84 +152,164 @@ async def ai_agent_interaction(query: str, model_name: str, temperature: float) 
                     "required": ["query"]
                 }
             }
-        }]
+        }],
+        options={"temperature": temperature}
     )
 
-    #st.write("DEBUG: First Ollama response ->", response)
+    # --- DEBUG STATEMENTS (FIRST CALL) ---
+    # st.write("DEBUG: Raw response from Ollama (First Call) ->", response)
+    # st.write("DEBUG: type(response) ->", type(response))
 
-    # Keep track of conversation
-    messages.append(response["message"])
+    # if isinstance(response["message"], dict):
+    #     st.write("DEBUG: response['message'] is a dict -> keys:", list(response["message"].keys()))
+    #     st.write("DEBUG: response['message'] ->", response["message"])
+    # else:
+    #     st.write("DEBUG: response['message'] is NOT a dict ->", response["message"])
+
+    tool_calls = response["message"].get("tool_calls", [])
+    #st.write("DEBUG: tool_calls (First Call) ->", tool_calls)
+
+    content = response["message"].get("content", "")
+    #st.write("DEBUG: content (First Call) ->", content)
 
     sql_query = None
     sql_results = None
 
-    function_call = response["message"].get("function_call")
-    tool_calls = response["message"].get("tool_calls")
+    # ------------------------------------------------------------------
+    # 1) If tool_calls is non-empty, parse it directly
+    # ------------------------------------------------------------------
+    if not tool_calls:
+        # Try to parse content as a function call
+        func_call = extract_json_from_message_string(content)
+        if func_call.get("name") == "execute_sql_query":
+            sql_query = func_call["arguments"].get("query")
+            if sql_query:
+                query_resp = execute_sql_query(sql_query)
+                sql_results = json.loads(query_resp)
 
-    # If there's a new style function call
-    if function_call and function_call.get("name") == "execute_sql_query":
-        try:
-            # Fix: Handle the arguments parsing more carefully
-            args = json.loads(function_call["arguments"]) if isinstance(function_call["arguments"], str) else function_call["arguments"]
-            sql_query = args.get("query")
-            if not sql_query:
-                #st.write("DEBUG: No query found in function arguments")
-                return {"error": "No SQL query provided in function arguments"}
+                # Instead of using tool messages, we'll add the results as part of the user's next message
+                messages.append({
+                    "role": "user",
+                    "content": f"Here are the results of your SQL query:\n{query_resp}\n\nPlease analyze these results."
+                })
+
+                # Make the second call for analysis
+                final_response = await client.chat(
+                    model=model_name,
+                    messages=messages,
+                    options={"temperature": temperature}
+                )
+
+                return {
+                    "sql_query": sql_query,
+                    "analysis": final_response["message"]["content"],
+                    "sql_results": sql_results
+                }
+
+    # ------------------------------------------------------------------
+    # 2) If tool_calls is empty, see if the content is actually a JSON tool call
+    # ------------------------------------------------------------------
+    else:
+        # Attempt to parse the content as a tool call
+        func_call = extract_json_from_message_string(content)
+        if func_call.get("name") == "execute_sql_query":
+            sql_query = func_call["arguments"].get("query")
+            if sql_query:
+                query_resp = execute_sql_query(sql_query)
+                sql_results = json.loads(query_resp)
+
+                # Add the tool call + response to messages with correct structure
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "execute_sql_query",
+                                # We must provide arguments as a *string*
+                                "arguments": json.dumps({"query": sql_query})
+                            }
+                        }
+                    ]
+                })
+                messages.append({
+                    "role": "tool",
+                    "content": query_resp,
+                    "tool_call_id": "manually_parsed"
+                })
+        else:
+            # No tool call found, just return direct text response
+            return {
+                "sql_query": None,
+                "analysis": content,
+                "sql_results": None
+            }
+
+    # ----------------------------------------------------------------------
+    # SECOND CALL: If we got SQL results, pass them back for final analysis
+    # ----------------------------------------------------------------------
+    if sql_results:
+        final_response = await client.chat(
+            model=model_name,
+            messages=messages,
+            options={"temperature": temperature}
+        )
+
+        # --- DEBUG STATEMENTS (SECOND CALL) ---
+        #st.write("DEBUG: Raw response from Ollama (Second Call) ->", final_response)
+        #st.write("DEBUG: type(final_response) ->", type(final_response))
+
+        #if isinstance(final_response["message"], dict):
+            #st.write("DEBUG: final_response['message'] is a dict -> keys:", list(final_response["message"].keys()))
+            #st.write("DEBUG: final_response['message'] ->", final_response["message"])
+        #else:
+            #st.write("DEBUG: final_response['message'] is NOT a dict ->", final_response["message"])
+
+        final_tool_calls = final_response["message"].get("tool_calls", [])
+        #st.write("DEBUG: tool_calls (Second Call) ->", final_tool_calls)
+
+        final_content = final_response["message"].get("content", "")
+        #st.write("DEBUG: content (Second Call) ->", final_content)
+
+        # Check if there's another tool call
+        if final_tool_calls:
+            for tool_call in final_tool_calls:
+                if tool_call["function"]["name"] == "execute_sql_query":
+                    try:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                        second_query = arguments.get("query")
+                        if second_query:
+                            query_resp_2 = execute_sql_query(second_query)
+                            sql_results_2 = json.loads(query_resp_2)
+                            
+                            # Combine results if both are lists
+                            if isinstance(sql_results, list) and isinstance(sql_results_2, list):
+                                sql_results.extend(sql_results_2)
+                            else:
+                                sql_results = sql_results_2
+                            sql_query = f"{sql_query}\n-- Second query:\n{second_query}"
+                    except json.JSONDecodeError as e:
+                        st.error(f"Error parsing second tool call arguments: {e}")
             
-            #st.write("DEBUG: Model-proposed SQL query (function_call) ->", sql_query)
-            function_resp = execute_sql_query(sql_query)
-            sql_results = json.loads(function_resp)
-            messages.append({
-                "role": "tool",
-                "name": function_call["name"],
-                "content": function_resp
-            })
-        except Exception as e:
-            st.write(f"DEBUG: Error processing function call -> {e}")
-            sql_results = {"error": str(e)}
+            final_content = "Here are the combined results from multiple queries."
+        
+        return {
+            "sql_query": sql_query,
+            "analysis": final_content,
+            "sql_results": sql_results
+        }
+    else:
+        # If we got here without SQL results but had a query, something went wrong
+        return {
+            "sql_query": sql_query,
+            "analysis": "Failed to execute SQL query or no results returned.",
+            "sql_results": None
+        }
 
-    # If there's an older style "tool_calls"
-    elif tool_calls:
-        # In older Ollama versions, tool_calls is a list of function calls
-        for tc in tool_calls:
-            if tc["function"]["name"] == "execute_sql_query":
-                try:
-                    query_args = tc["function"]["arguments"]
-                    sql_query = query_args.get("query", "")
-                    #st.write("DEBUG: Model-proposed SQL query (tool_calls) ->", sql_query)
-                    function_resp = execute_sql_query(sql_query)
-                    sql_results = json.loads(function_resp)
-                    # Add the result as a new tool message
-                    messages.append({
-                        "role": "tool",
-                        "name": "execute_sql_query",
-                        "content": function_resp
-                    })
-                except Exception as e:
-                    sql_results = {"error": str(e)}
-
-    # Make a second call to get final analysis after we have the query results
-    final_response = await client.chat(
-        model=model_name,
-        messages=messages
-    )
-    #st.write("DEBUG: Final Ollama response ->", final_response)
-
-    final_analysis = final_response["message"].get("content", "")
-
-    return {
-        "sql_query": sql_query,
-        "analysis": final_analysis,
-        "sql_results": sql_results
-    }
-
-# ---------------------------------------------------------------------
-#      Utility: Ollama server checks & model retrieval
-# ---------------------------------------------------------------------
+##############################################################################
+# OLLAMA SERVER CHECKS & MODEL RETRIEVAL
+##############################################################################
 def get_available_ollama_models():
-    """
-    Retrieve a list of available Ollama models from the local Ollama server.
-    """
     try:
         resp = requests.get('http://localhost:11434/api/tags', timeout=5)
         if resp.status_code == 200:
@@ -248,23 +318,20 @@ def get_available_ollama_models():
             return [m['name'] for m in models if 'name' in m]
         return []
     except Exception as e:
-        st.write("DEBUG: Error retrieving Ollama models ->", e)
+        #st.write("DEBUG: Error retrieving Ollama models ->", e)
         return []
 
 def check_ollama_server():
-    """
-    Check if the Ollama server is running locally.
-    """
     try:
         requests.get('http://localhost:11434/api/tags', timeout=5)
         return True
     except requests.exceptions.RequestException as e:
-        st.write("DEBUG: Ollama server check failed ->", e)
+        #st.write("DEBUG: Ollama server check failed ->", e)
         return False
 
-# ---------------------------------------------------------------------
-#                           Streamlit UI
-# ---------------------------------------------------------------------
+##############################################################################
+# STREAMLIT UI
+##############################################################################
 with st.sidebar:
     st.title('Tweet Analyzer 🐦')
 
@@ -287,7 +354,6 @@ with st.sidebar:
     user_query = st.text_area('Enter your query about the Twitter data:', height=100)
     submit_query = st.button('Submit Query')
 
-# Main content area
 st.header('Tweet Analysis')
 
 # Preview the dataset
@@ -296,14 +362,13 @@ with st.expander("📊 Preview Dataset", expanded=False):
         con = get_db_connection()
         total_rows = con.execute("SELECT COUNT(*) FROM tweets").fetchone()[0]
         st.write(f"Total tweets in database: {total_rows:,}")
-
         sample_df = con.execute("SELECT * FROM tweets LIMIT 5").df()
         st.write(f"Sample of {sample_df.shape[0]} tweets ({sample_df.shape[1]} columns):")
         st.dataframe(sample_df)
     except Exception as e:
         st.error(f"Error loading preview: {str(e)}")
 
-# Run the AI agent query when the user clicks "Submit Query"
+# Handle the AI agent query
 if submit_query:
     if not model_name:
         st.warning('Please select an Ollama model before submitting a query.')
@@ -311,58 +376,41 @@ if submit_query:
         st.error('Ollama server is not running. Please start Ollama and try again.')
     else:
         with st.spinner('Analyzing tweets...'):
-            #st.write("DEBUG: Sending user query to ai_agent_interaction:", user_query)
             result = asyncio.run(ai_agent_interaction(user_query, model_name, model_temperature))
+            # st.write("DEBUG: SQL Query:", result.get('sql_query'))
+            # st.write("DEBUG: SQL Results:", result.get('sql_results'))
+            # st.write("DEBUG: Analysis:", result.get('analysis'))
 
-            #st.write("DEBUG: Final result from AI interaction:", result)
+            # Store conversation
+            st.session_state['chat_history'].append({'role': 'user', 'content': user_query})
+            st.session_state['chat_history'].append({'role': 'assistant', 'content': result})
 
-            # Update chat history
-            st.session_state['chat_history'].append({
-                'role': 'user',
-                'content': user_query
-            })
-            st.session_state['chat_history'].append({
-                'role': 'assistant',
-                'content': result  
-            })
-
-# Display the chat messages
+# Display conversation
 for i, message_pair in enumerate(zip(st.session_state['chat_history'][::2], st.session_state['chat_history'][1::2])):
     user_message, assistant_message = message_pair
-    
-    # Create a single expander for the entire exchange
-    with st.expander(f"🗣️ {user_message['content']}", expanded=True):
-        # User Query
-        st.write("Question:", user_message['content'])
+    with st.expander(f"🗣️ {user_message['content']}", expanded=False):
+        st.write("**Question:**", user_message['content'])
         
-        # Assistant Response
         content_dict = assistant_message['content']
         if isinstance(content_dict, dict):
-            # SQL Query Section
+            # SQL Query
             if content_dict.get('sql_query'):
                 st.markdown("#### 🔍 SQL Query")
                 st.code(content_dict['sql_query'], language='sql')
 
-            # Query Results Section
+            # Query Results
             if content_dict.get('sql_results') is not None:
                 st.markdown("#### 📊 Query Results")
                 if isinstance(content_dict['sql_results'], list):
                     df = pd.DataFrame(content_dict['sql_results'])
-                    st.dataframe(
-                        df,
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                 else:
                     st.write(content_dict['sql_results'])
 
-            # # Analysis Section
-            # if content_dict.get('analysis'):
-            #     st.markdown("#### 📝 Analysis")
-            #     st.write(content_dict['analysis'])
+            # Analysis
+            if content_dict.get('analysis'):
+                st.markdown("#### 📝 Analysis")
+                st.write(content_dict['analysis'])
         else:
+            # In case it's just plain text
             st.write(content_dict)
-
-# Move debug messages to use st.debug instead of st.write
-def debug_message(msg, data):
-    st.debug(f"{msg}: {data}")
