@@ -6,7 +6,7 @@ from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
-import plotly.express as px  # <-- NEW
+import plotly.express as px
 import json
 import os
 import re
@@ -71,6 +71,9 @@ def get_embeddings(ollama_url, model, texts, cache_prefix):
     Generate embeddings for the given texts using the specified Ollama model.
     Includes a per-text progress bar and time estimate.
     """
+    # Ensure texts are strings
+    texts = [str(text) for text in texts]
+    
     cache_file = os.path.join(CACHE_FOLDER, f"{cache_prefix}_{model}.npz")
 
     # Attempt to load from cache
@@ -140,14 +143,26 @@ def get_embeddings(ollama_url, model, texts, cache_prefix):
 ############################
 #  Summaries
 ############################
-def generate_leaf_summary(ollama_url, model, leaf_texts, sample_size, temperature, prompt_template):
+def generate_leaf_summary(
+    ollama_url, 
+    model, 
+    leaf_texts, 
+    sample_size, 
+    temperature, 
+    prompt_template,
+    parent_name=None  # <-- NEW
+):
     """
     LLM call for leaf clusters:
     - sample up to 'sample_size' tweets from 'leaf_texts'.
     - pass them to the LLM with 'prompt_template'.
+    - the prompt is aware of parent_name.
     """
     sampled_texts = leaf_texts[:sample_size]  # simple front-truncation
-    prompt = prompt_template.format(texts="\n".join(sampled_texts))
+    prompt = prompt_template.format(
+        parent_name=parent_name if parent_name else "No assigned parent name",
+        texts="\n".join(sampled_texts)
+    )
 
     try:
         response = requests.post(
@@ -178,13 +193,14 @@ def generate_parent_summary(
     child_nodes,  # list of child ClusterNodes
     parent_sample_size,
     temperature,
-    prompt_template
+    prompt_template,
+    parent_name=None  # <-- NEW
 ):
     """
     LLM call for parent clusters:
     - gather up to 'parent_sample_size' tweets from EACH child's texts.
     - also gather child cluster names.
-    - pass them all in one prompt to the LLM.
+    - pass them all in one prompt to the LLM, being aware of parent_name.
     """
     child_names = []
     sample_texts = []
@@ -203,6 +219,7 @@ def generate_parent_summary(
 
     # Format the prompt
     prompt = prompt_template.format(
+        parent_name=parent_name if parent_name else "No assigned parent name",
         child_cluster_names=joined_child_names,
         child_samples=joined_samples
     )
@@ -264,9 +281,6 @@ def build_top_down_tree(embeddings, texts, indexes, current_level, max_levels, k
     node.texts = [texts[i] for i in indexes]
 
     if current_level < max_levels:
-        # Add debugging information
-        #st.write(f"Level {current_level}: Clustering {len(indexes)} points into {k} clusters")
-        
         kmeans = KMeans(n_clusters=k, random_state=42)
         labels = kmeans.fit_predict(node.embeddings)
         
@@ -317,6 +331,7 @@ def postorder_naming(
     Post-order DFS for naming:
       - name children first
       - then name this node (differently if leaf or parent)
+      - pass parent's name to the prompt so LLM can be aware of previously assigned names.
     """
     for child in node.children:
         postorder_naming(
@@ -349,15 +364,19 @@ def postorder_naming(
         f"Estimated time remaining: {est_remaining_str}"
     )
 
+    # Get parent name (if it exists), to pass to the prompt
+    parent_name = node.parent.name if (node.parent and node.parent.name) else "No assigned parent name"
+
     if len(node.children) == 0:
-        # Leaf node => use leaf_prompt_template, sample from node.texts
+        # Leaf node => use leaf_prompt_template
         node.name = generate_leaf_summary(
             ollama_url=ollama_url,
             model=summary_model,
             leaf_texts=node.texts,
             sample_size=leaf_sample_size,
             temperature=temperature,
-            prompt_template=leaf_prompt_template
+            prompt_template=leaf_prompt_template,
+            parent_name=parent_name
         )
     else:
         # Parent node => use parent_prompt_template, gather child names + samples
@@ -367,7 +386,8 @@ def postorder_naming(
             child_nodes=node.children,
             parent_sample_size=parent_sample_size,
             temperature=temperature,
-            prompt_template=parent_prompt_template
+            prompt_template=parent_prompt_template,
+            parent_name=parent_name
         )
 
 def extract_leaves(node, leaf_list):
@@ -684,7 +704,7 @@ def main():
                     st.error(f"Error loading embeddings cache: {e}")
 
         st.subheader("DuckDB Configuration")
-        db_path = "../tweets2.duckdb"
+        db_path = "../tweets2.duckdb"  # Adjust path as needed
         table_name = st.text_input("DuckDB Table Name", "tweets_table")
         row_limit = st.number_input("Number of rows to load", min_value=1, max_value=1_000_000, value=1000, step=100)
 
@@ -706,20 +726,48 @@ def main():
             selected_embedding_model = None
             summary_model = None
 
-        # Leaf & parent prompt
+        # ------------------------------
+        # UPDATED PROMPTS
+        # ------------------------------
         st.subheader("LLM Prompts & Sampling")
+        
+        # Leaf prompt: uses {parent_name} and {texts}
         leaf_prompt_template = st.text_area(
             "Leaf Prompt Template",
-            "You are an LLM that names clusters of tweets. Here are sample tweets:\n{texts}\n\n"
-            "Output a concise short phrase describing this leaf cluster."
+            """
+You are a helpful AI assistant specialized in text analysis.
+We have a leaf cluster, meaning it has no children. 
+The parent of this leaf cluster has been named '{parent_name}'.
+Below are sample texts from this leaf cluster:
+
+{texts}
+
+We are naming clusters from the bottom up. 
+Given these sample texts and the parent's name, 
+propose a short, plain-text name that captures the main theme or topic of this leaf cluster. 
+Return only the short descriptive name without extra commentary.
+""".strip()
         )
+        
+        # Parent prompt: uses {parent_name}, {child_cluster_names}, {child_samples}
         parent_prompt_template = st.text_area(
             "Parent Prompt Template",
-            "You are an LLM that names a parent cluster of tweets.\n"
-            "Below are child cluster names plus some example tweets from each child:\n"
-            "Child cluster names: {child_cluster_names}\n"
-            "Here are sample tweets from these children:\n{child_samples}\n\n"
-            "Output a concise short phrase describing this parent cluster."
+"""
+You are a helpful AI assistant specialized in text analysis.
+We are building a hierarchy from the bottom up. 
+This parent cluster is formed by grouping the following child clusters from the level below, each already assigned a name:
+
+Child cluster names: {child_cluster_names}
+
+Below are sample texts from each child cluster:
+{child_samples}
+
+The parent cluster itself belongs to a higher-level cluster named '{parent_name}' (if applicable).
+
+Based on the child cluster names and their sample texts, 
+propose a single short, plain-text name that best captures the overarching theme of these child clusters. 
+Return only the short descriptive name without extra commentary.
+""".strip()
         )
 
         leaf_sample_size = st.slider("Leaf Sampling Rate", 1, 100, 5, 1)
@@ -752,16 +800,17 @@ def main():
                 st.error(f"Error loading from DuckDB: {e}")
                 st.session_state.df = None
 
-    # Show data preview
+    # Show data preview (collapsible)
     if st.session_state.df is not None:
-        st.subheader("Preview of the Loaded Data:")
-        st.dataframe(st.session_state.df.head(5))
-        st.write(f"Total rows: {len(st.session_state.df)}")
+        with st.expander("Preview of the Loaded Data", expanded=True):
+            st.subheader("Preview of the Loaded Data:")
+            st.dataframe(st.session_state.df.head(5))
+            st.write(f"Total rows: {len(st.session_state.df)}")
 
     # 2) Run the pipeline if user clicks
     if process_button and st.session_state.df is not None and selected_column_name:
         df = st.session_state.df
-        texts = df[selected_column_name].tolist()
+        texts = df[selected_column_name].astype(str).tolist()  # Convert column to string type
 
         # Embeddings
         if st.session_state.embeddings is None:
@@ -769,7 +818,7 @@ def main():
                 ollama_url=st.session_state.ollama_url,
                 model=selected_embedding_model,
                 texts=texts,
-                cache_prefix=f"{table_name}_{row_limit}"
+                cache_prefix=f"{table_name}_{selected_column_name}_{row_limit}"
             )
             if embeddings is None or len(embeddings) == 0:
                 st.error("Failed to get embeddings. Stopping.")
@@ -837,18 +886,16 @@ def main():
         taxonomy_lines = build_taxonomy_text(root_node)
         taxonomy_text = "\n".join(taxonomy_lines)
 
-        # Display textual hierarchy
-        st.subheader("Taxonomy (Hierarchical Naming) - Text View")
-        st.text(taxonomy_text)
+        # Display Treemap hierarchy (collapsible)
+        with st.expander("Taxonomy (Hierarchical Naming) - Treemap Visualization", expanded=False):
+            st.subheader("Taxonomy (Hierarchical Naming) - Treemap Visualization")
+            fig_tree = create_taxonomy_treemap(root_node)
+            st.plotly_chart(fig_tree, use_container_width=True)
 
-        # Display Treemap hierarchy
-        st.subheader("Taxonomy (Hierarchical Naming) - Treemap Visualization")
-        fig_tree = create_taxonomy_treemap(root_node)
-        st.plotly_chart(fig_tree, use_container_width=True)
-
-        # Display leaf cluster summary
-        st.subheader("Leaf Cluster Summary")
-        st.table(leaf_summary_table[["Cluster Title", "# of Items", "Percentage", "Examples"]])
+        # Display leaf cluster summary (collapsible)
+        with st.expander("Leaf Cluster Summary", expanded=False):
+            st.subheader("Leaf Cluster Summary")
+            st.table(leaf_summary_table[["Cluster Title", "# of Items", "Percentage", "Examples"]])
 
         # 3D scatter plot
         st.write("### 3D Visualization (Leaf Assignments)")
