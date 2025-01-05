@@ -11,7 +11,7 @@ Prompted to find top users by tweet count.
 ## 📋 Prerequisites
 - Python 3.8 or higher
 - Ollama installed and running locally
-- At least one Ollama model downloaded (recommended: mistral or llama2)
+- At least one Ollama model downloaded (recommended: gemma or llama3)
 
 ## 🚀 Development Setup
 
@@ -39,15 +39,15 @@ Install Jupyter kernel dependencies
 pip install ipykernel jupyter
 ```
 
-## 3️⃣ Adding the virtual environment as a jupyter kernel.
+### 3️⃣ Adding the virtual environment as a jupyter kernel.
 ```bash
 python -m ipykernel install --user --name=venv
 ```
 
-## 4️⃣ Start Ollama Server
+### 4️⃣ Start Ollama Server
 Ensure Ollama is running on your machine (default port: 11434)
 
-## 5️⃣ Launch the app
+### 5️⃣ Launch the app
 ```bash
 streamlit run app.py
 ```

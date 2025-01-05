@@ -5,7 +5,7 @@
 ## 📋 Prerequisites
 - Python 3.8 or higher
 - Ollama installed and running locally
-- At least one Ollama model downloaded (recommended: mistral or llama2)
+- At least one Ollama model downloaded (recommended: gemma or llama3)
 
 ## 🚀 Development Setup
 
