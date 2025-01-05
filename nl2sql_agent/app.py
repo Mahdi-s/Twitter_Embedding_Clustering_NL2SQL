@@ -333,7 +333,7 @@ def check_ollama_server():
 # STREAMLIT UI
 ##############################################################################
 with st.sidebar:
-    st.title('Tweet Analyzer 🐦')
+    st.title('NL2SQL Tweet Analyzer 🐦')
 
     # Model Settings
     with st.expander("🛠️ Model Settings", expanded=False):

@@ -859,6 +859,14 @@ Return only the summary without extra commentary or markup code.
             try:
                 st.session_state.df = load_data_from_duckdb(db_path, table_name, row_limit)
                 st.success(f"Loaded {len(st.session_state.df)} rows from {table_name}")
+                
+                # Reset all downstream results so we don't re-use old data
+                st.session_state.embeddings = None
+                st.session_state.root_node = None
+                st.session_state.leaf_nodes = None
+                st.session_state.reduced_embeddings = None
+                st.session_state.leaf_summary_table = None
+
             except Exception as e:
                 st.error(f"Error loading from DuckDB: {e}")
                 st.session_state.df = None

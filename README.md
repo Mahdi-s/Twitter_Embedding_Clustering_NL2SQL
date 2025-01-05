@@ -15,12 +15,12 @@ This repository focuses on analyzing political tweets collected from Twitter/X, 
 Below is a demo of the embedding and clustering experiment in action:
 
 
-[![Demo Video](https://img.youtube.com/vi/sD0ibVYFg4c/0.jpg)](https://www.youtube.com/watch?v=sD0ibVYFg4c)
+![EC Demo](images/EC_demo.gif)
 
 
 ### NL2SQL Agent Demo
 
-
+![NL2SQL Demo](images/NL2SQL.gif)
 
 
 ---
