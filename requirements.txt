@@ -9,3 +9,4 @@ scikit-learn
 requests
 plotly
 matplotlib
+tabulate

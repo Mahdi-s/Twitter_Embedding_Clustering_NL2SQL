@@ -866,7 +866,7 @@ Return only the summary without extra commentary or markup code.
     # Show data preview (collapsible)
     if st.session_state.df is not None:
         with st.expander("Preview of the Loaded Data", expanded=True):
-            st.subheader("Preview of the Loaded Data:")
+            #st.subheader("Preview of the Loaded Data:")
             st.dataframe(st.session_state.df.head(5))
             st.write(f"Total rows: {len(st.session_state.df)}")
 
@@ -959,13 +959,13 @@ Return only the summary without extra commentary or markup code.
     if st.session_state.root_node is not None and st.session_state.leaf_nodes is not None and st.session_state.reduced_embeddings is not None:
         # Display Treemap hierarchy (collapsible)
         with st.expander("Taxonomy (Hierarchical Naming) - Treemap Visualization", expanded=False):
-            st.subheader("Taxonomy (Hierarchical Naming) - Treemap Visualization")
+            #st.subheader("Taxonomy (Hierarchical Naming) - Treemap Visualization")
             fig_tree = create_taxonomy_treemap(st.session_state.root_node)
             st.plotly_chart(fig_tree, use_container_width=True)
 
         # Display leaf cluster summary (collapsible)
         with st.expander("Leaf Cluster Summary", expanded=False):
-            st.subheader("Leaf Cluster Summary")
+            #st.subheader("Leaf Cluster Summary")
             st.table(st.session_state.leaf_summary_table[["Cluster Title", "# of Items", "Percentage", "Examples"]])
 
         st.write("### 3D Visualization (Leaf Assignments)")
