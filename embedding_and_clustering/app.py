@@ -150,18 +150,24 @@ def generate_leaf_summary(
     sample_size, 
     temperature, 
     prompt_template,
-    parent_name=None  # <-- NEW
+    summaries=None,
+    parent_name=None
 ):
     """
     LLM call for leaf clusters:
     - sample up to 'sample_size' tweets from 'leaf_texts'.
     - pass them to the LLM with 'prompt_template'.
-    - the prompt is aware of parent_name.
+    - also inject the 'summaries' of sibling clusters at the same level
+      to avoid duplication.
     """
+    if summaries is None:
+        summaries = []
+
     sampled_texts = leaf_texts[:sample_size]  # simple front-truncation
     prompt = prompt_template.format(
         parent_name=parent_name if parent_name else "No assigned parent name",
-        texts="\n".join(sampled_texts)
+        texts="\n".join(sampled_texts),
+        summaries="\n".join(summaries)
     )
 
     try:
@@ -194,34 +200,33 @@ def generate_parent_summary(
     parent_sample_size,
     temperature,
     prompt_template,
-    parent_name=None  # <-- NEW
+    summaries=None,
+    parent_name=None
 ):
     """
     LLM call for parent clusters:
     - gather up to 'parent_sample_size' tweets from EACH child's texts.
     - also gather child cluster names.
-    - pass them all in one prompt to the LLM, being aware of parent_name.
+    - pass them in one prompt to the LLM, along with sibling summaries at this level.
     """
-    child_names = []
-    sample_texts = []
-    for child in child_nodes:
-        if child.name:
-            child_names.append(child.name)
-        # sample from the child's tweets
-        sampled = child.texts[:parent_sample_size]
-        # label them with the child's name for clarity
-        sample_texts.append(f"Child '{child.name}':\n" + "\n".join(sampled))
+    if summaries is None:
+        summaries = []
 
-    # Combine child cluster names
-    joined_child_names = " | ".join(child_names) if child_names else "No child names"
-    # Combine sample tweets
-    joined_samples = "\n\n".join(sample_texts)
+    # Build subcategories + example tweets
+    subcats_list = []
+    for child in child_nodes:
+        sample_texts = child.texts[:parent_sample_size]
+        subcats_list.append(
+            f"Subcategory: {child.name}\nExample Tweets:\n" + "\n".join(sample_texts)
+        )
+
+    list_of_subcategories_followed_by_example_tweets = "\n\n".join(subcats_list)
 
     # Format the prompt
     prompt = prompt_template.format(
         parent_name=parent_name if parent_name else "No assigned parent name",
-        child_cluster_names=joined_child_names,
-        child_samples=joined_samples
+        list_of_subcategories_followed_by_example_tweets=list_of_subcategories_followed_by_example_tweets,
+        summaries_of_nodes_in_the_same_level="\n".join(summaries)
     )
 
     try:
@@ -331,8 +336,9 @@ def postorder_naming(
     Post-order DFS for naming:
       - name children first
       - then name this node (differently if leaf or parent)
-      - pass parent's name to the prompt so LLM can be aware of previously assigned names.
+      - pass parent's name + sibling summaries to the prompt so LLM can be aware.
     """
+    # 1) Name children first
     for child in node.children:
         postorder_naming(
             child,
@@ -350,7 +356,7 @@ def postorder_naming(
             ollama_url
         )
 
-    # Now name `node`
+    # 2) Now name `node`
     named_count[0] += 1
     fraction_done = named_count[0] / total_nodes
     naming_progress_bar.progress(fraction_done)
@@ -364,9 +370,21 @@ def postorder_naming(
         f"Estimated time remaining: {est_remaining_str}"
     )
 
-    # Get parent name (if it exists), to pass to the prompt
+    # Gather sibling summaries at the same level
+    # (i.e. other children of node.parent). If node is root, no siblings.
+    if node.parent:
+        siblings = node.parent.children
+        sibling_summaries = [
+            sib.name for sib in siblings
+            if sib is not node and sib.name  # only if named already
+        ]
+    else:
+        sibling_summaries = []
+
+    # Prepare parent's name if it exists
     parent_name = node.parent.name if (node.parent and node.parent.name) else "No assigned parent name"
 
+    # 3) Leaf vs Parent naming
     if len(node.children) == 0:
         # Leaf node => use leaf_prompt_template
         node.name = generate_leaf_summary(
@@ -376,10 +394,11 @@ def postorder_naming(
             sample_size=leaf_sample_size,
             temperature=temperature,
             prompt_template=leaf_prompt_template,
+            summaries=sibling_summaries,
             parent_name=parent_name
         )
     else:
-        # Parent node => use parent_prompt_template, gather child names + samples
+        # Parent node => use parent_prompt_template
         node.name = generate_parent_summary(
             ollama_url=ollama_url,
             model=summary_model,
@@ -387,6 +406,7 @@ def postorder_naming(
             parent_sample_size=parent_sample_size,
             temperature=temperature,
             prompt_template=parent_prompt_template,
+            summaries=sibling_summaries,
             parent_name=parent_name
         )
 
@@ -415,36 +435,60 @@ def build_taxonomy_text(node, indent_level=0):
 ############################
 #  NEW: Gathering data for Plotly Treemap
 ############################
-def gather_paths(node, path_so_far=None):
+def create_taxonomy_treemap(root_node, wrap_width=40):
     """
-    Return a list of (path, size) for every node in the hierarchy.
-    Only leaf nodes will have sizes, parent nodes will have size=0.
+    Builds a Treemap figure from the hierarchical data using Plotly Express,
+    wrapping long text to keep hover popups from going off-screen.
     """
-    if path_so_far is None:
-        path_so_far = []
-    current_path = path_so_far + [node.name or "Unnamed"]
-    
-    # If this is a leaf node, return its data
-    if len(node.children) == 0:
-        return [(current_path, len(node.indexes))]
-    
-    # If it's a parent node, only gather data from children
-    data = []
-    for child in node.children:
-        data.extend(gather_paths(child, current_path))
-    return data
 
-def create_taxonomy_treemap(root_node):
-    """
-    Builds a Treemap figure from the hierarchical data using Plotly Express.
-    Only leaf nodes will have sizes.
-    """
+    def wrap_text_for_hover(s, width=40):
+        """
+        Inserts <br> line breaks so that each line is at most `width` characters.
+        """
+        if not s:
+            return ""
+        s = str(s)
+        words = s.split()
+        lines = []
+        current_line = []
+        current_length = 0
+        for w in words:
+            w_len = len(w)
+            # If adding this word exceeds the width, start a new line
+            if current_length + w_len + 1 > width:
+                lines.append(" ".join(current_line))
+                current_line = [w]
+                current_length = w_len
+            else:
+                current_line.append(w)
+                current_length += w_len + 1
+        if current_line:
+            lines.append(" ".join(current_line))
+        return "<br>".join(lines)
+
+    # Recursive gather of (path, size)
+    def gather_paths(node, path_so_far=None):
+        if path_so_far is None:
+            path_so_far = []
+        # Wrap node name
+        node_label = wrap_text_for_hover(node.name or "Unnamed", wrap_width)
+        current_path = path_so_far + [node_label]
+
+        # If this is a leaf node, return its data
+        if len(node.children) == 0:
+            return [(current_path, len(node.indexes))]
+        
+        # If it's a parent node, gather data from children
+        data = []
+        for child in node.children:
+            data.extend(gather_paths(child, current_path))
+        return data
+
     paths_and_sizes = gather_paths(root_node, [])
-    
+
     # Create separate columns for each level of the path
     records = []
     max_depth = max(len(path) for path, _ in paths_and_sizes)
-    
     for path, size in paths_and_sizes:
         # Pad path with None values if it's shorter than max_depth
         padded_path = path + [None] * (max_depth - len(path))
@@ -456,7 +500,7 @@ def create_taxonomy_treemap(root_node):
     
     # Create path list for treemap
     path_cols = [col for col in df_treemap.columns if col.startswith("level_")]
-    
+
     # Create a Treemap
     fig = px.treemap(
         df_treemap,
@@ -464,14 +508,27 @@ def create_taxonomy_treemap(root_node):
         values='size',    # the numerical column
         color='size',
         color_continuous_scale='Blues',
-        branchvalues='total'  # This ensures proper size calculations
+        branchvalues='total'  # ensures proper size calculations
     )
-    
+
+    # Update hover label to prevent truncation and keep it left-aligned
+    fig.update_traces(
+        hoverlabel=dict(
+            align='left',
+            font_size=12,
+            font_family="Arial",
+            namelength=-1,  # do not truncate
+        ),
+        # Example of customizing the default hover to show the full label & value
+        hovertemplate="<b>%{label}</b><br>Size=%{value}<extra></extra>",
+    )
+    # Adjust overall layout margins
     fig.update_layout(
         margin=dict(t=50, l=25, r=25, b=25),
         title="Taxonomy Treemap (Hierarchical Naming)"
     )
     return fig
+
 
 ############################
 #   Dimensionality Reduction
@@ -670,10 +727,22 @@ def main():
     st.set_page_config(page_title="TextCluster", page_icon="📊", layout="wide")
     st.title("📊 Embedding & Top-Down Hierarchical Clustering")
 
-    # Session state
+    # -------------------------------
+    # Session state initialization:
+    # -------------------------------
     if 'df' not in st.session_state:
         st.session_state.df = None
         st.session_state.embeddings = None
+    
+    # For storing the final clustering results so we don't lose them:
+    if 'root_node' not in st.session_state:
+        st.session_state.root_node = None
+    if 'leaf_nodes' not in st.session_state:
+        st.session_state.leaf_nodes = None
+    if 'reduced_embeddings' not in st.session_state:
+        st.session_state.reduced_embeddings = None
+    if 'leaf_summary_table' not in st.session_state:
+        st.session_state.leaf_summary_table = None
 
     if 'ollama_url' not in st.session_state:
         st.session_state.ollama_url = DEFAULT_OLLAMA_URL
@@ -692,20 +761,20 @@ def main():
                 if not models:
                     st.error("No Ollama models available. Check your Ollama installation.")
 
-        # Collapsable to load .npz embedding cache
-        with st.expander("🔃 Load Embedding Cache", expanded=False):
-            uploaded_file = st.file_uploader("Upload .npz embedding cache")
-            if uploaded_file is not None:
-                try:
-                    data = np.load(uploaded_file, allow_pickle=True)
-                    st.session_state.embeddings = data['embeddings']
-                    st.write("Embeddings loaded from uploaded cache!")
-                except Exception as e:
-                    st.error(f"Error loading embeddings cache: {e}")
+        # # Collapsable to load .npz embedding cache
+        # with st.expander("🔃 Load Embedding Cache", expanded=False):
+        #     uploaded_file = st.file_uploader("Upload .npz embedding cache")
+        #     if uploaded_file is not None:
+        #         try:
+        #             data = np.load(uploaded_file, allow_pickle=True)
+        #             st.session_state.embeddings = data['embeddings']
+        #             st.write("Embeddings loaded from uploaded cache!")
+        #         except Exception as e:
+        #             st.error(f"Error loading embeddings cache: {e}")
 
         st.subheader("DuckDB Configuration")
         db_path = "../tweets2.duckdb"  # Adjust path as needed
-        table_name = st.text_input("DuckDB Table Name", "tweets_table")
+        table_name = st.text_input("DuckDB Table Name", "tweets")
         row_limit = st.number_input("Number of rows to load", min_value=1, max_value=1_000_000, value=1000, step=100)
 
         load_data_button = st.button("Load Data from DuckDB")
@@ -727,46 +796,38 @@ def main():
             summary_model = None
 
         # ------------------------------
-        # UPDATED PROMPTS
+        # Updated prompts with placeholders
         # ------------------------------
         st.subheader("LLM Prompts & Sampling")
         
-        # Leaf prompt: uses {parent_name} and {texts}
         leaf_prompt_template = st.text_area(
             "Leaf Prompt Template",
             """
-You are a helpful AI assistant specialized in text analysis.
-We have a leaf cluster, meaning it has no children. 
-The parent of this leaf cluster has been named '{parent_name}'.
-Below are sample texts from this leaf cluster:
+Below is a list of tweets. Please write a one-liner summary of the tweets.
+The one-liner should be representative of the sample and should highlight the common theme or topic or sentiment or common named entities in the tweets.
 
 {texts}
 
-We are naming clusters from the bottom up. 
-Given these sample texts and the parent's name, 
-propose a short, plain-text name that captures the main theme or topic of this leaf cluster. 
-Return only the short descriptive name without extra commentary.
+note: to ensure uniqueness of topics make sure that the one-liner is not the same as the previously assigned summaries as listed below:
+
+{summaries}
+
+Return only the summary without extra commentary or markup code.
 """.strip()
         )
         
-        # Parent prompt: uses {parent_name}, {child_cluster_names}, {child_samples}
         parent_prompt_template = st.text_area(
             "Parent Prompt Template",
-"""
-You are a helpful AI assistant specialized in text analysis.
-We are building a hierarchy from the bottom up. 
-This parent cluster is formed by grouping the following child clusters from the level below, each already assigned a name:
+            """
+Please come up with a representative one-liner summary of the data below. The one-liner should be representative of the sample data and the assigned subcategory summaries. It should highlight the common theme or topic or sentiment or common named entities mentioned.
 
-Child cluster names: {child_cluster_names}
+{list_of_subcategories_followed_by_example_tweets}
 
-Below are sample texts from each child cluster:
-{child_samples}
+note: to ensure uniqueness of topics make sure that the one-liner is not the same as the previously assigned summaries as listed below:
 
-The parent cluster itself belongs to a higher-level cluster named '{parent_name}' (if applicable).
+{summaries_of_nodes_in_the_same_level}
 
-Based on the child cluster names and their sample texts, 
-propose a single short, plain-text name that best captures the overarching theme of these child clusters. 
-Return only the short descriptive name without extra commentary.
+Return only the summary without extra commentary or markup code.
 """.strip()
         )
 
@@ -807,7 +868,7 @@ Return only the short descriptive name without extra commentary.
             st.dataframe(st.session_state.df.head(5))
             st.write(f"Total rows: {len(st.session_state.df)}")
 
-    # 2) Run the pipeline if user clicks
+    # 2) Run the pipeline if user clicks "Process"
     if process_button and st.session_state.df is not None and selected_column_name:
         df = st.session_state.df
         texts = df[selected_column_name].astype(str).tolist()  # Convert column to string type
@@ -826,6 +887,7 @@ Return only the short descriptive name without extra commentary.
             st.session_state.embeddings = embeddings
         else:
             embeddings = st.session_state.embeddings
+            # Warn if shape mismatch
             if embeddings.shape[0] != len(texts):
                 st.warning("Loaded embeddings do not match row count! Proceed with caution.")
 
@@ -882,27 +944,33 @@ Return only the short descriptive name without extra commentary.
             **dim_params
         )
 
-        # Build taxonomy text (indented)
-        taxonomy_lines = build_taxonomy_text(root_node)
-        taxonomy_text = "\n".join(taxonomy_lines)
+        # Store results in session state
+        st.session_state.root_node = root_node
+        st.session_state.leaf_nodes = leaf_nodes
+        st.session_state.reduced_embeddings = reduced_embeddings
+        st.session_state.leaf_summary_table = leaf_summary_table
 
+    # -------------------------------------------------------
+    # 3) If we already have processed data, show the results
+    #    This allows changing show_legend or dot_size on the fly
+    # -------------------------------------------------------
+    if st.session_state.root_node is not None and st.session_state.leaf_nodes is not None and st.session_state.reduced_embeddings is not None:
         # Display Treemap hierarchy (collapsible)
         with st.expander("Taxonomy (Hierarchical Naming) - Treemap Visualization", expanded=False):
             st.subheader("Taxonomy (Hierarchical Naming) - Treemap Visualization")
-            fig_tree = create_taxonomy_treemap(root_node)
+            fig_tree = create_taxonomy_treemap(st.session_state.root_node)
             st.plotly_chart(fig_tree, use_container_width=True)
 
         # Display leaf cluster summary (collapsible)
         with st.expander("Leaf Cluster Summary", expanded=False):
             st.subheader("Leaf Cluster Summary")
-            st.table(leaf_summary_table[["Cluster Title", "# of Items", "Percentage", "Examples"]])
+            st.table(st.session_state.leaf_summary_table[["Cluster Title", "# of Items", "Percentage", "Examples"]])
 
-        # 3D scatter plot
         st.write("### 3D Visualization (Leaf Assignments)")
         fig_3d = create_3d_scatter_plot(
-            reduced_embeddings=reduced_embeddings,
-            leaf_nodes=leaf_nodes,
-            df=df,
+            reduced_embeddings=st.session_state.reduced_embeddings,
+            leaf_nodes=st.session_state.leaf_nodes,
+            df=st.session_state.df,
             dot_size=dot_size,
             show_legend=show_legend
         )
