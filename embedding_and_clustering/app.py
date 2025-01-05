@@ -74,7 +74,9 @@ def get_embeddings(ollama_url, model, texts, cache_prefix):
     # Ensure texts are strings
     texts = [str(text) for text in texts]
     
-    cache_file = os.path.join(CACHE_FOLDER, f"{cache_prefix}_{model}.npz")
+    # Sanitize model name for file path by replacing special chars with underscores
+    safe_model_name = re.sub(r'[^\w\-_.]', '_', model)
+    cache_file = os.path.join(CACHE_FOLDER, f"{cache_prefix}_{safe_model_name}.npz")
 
     # Attempt to load from cache
     if os.path.exists(cache_file):
