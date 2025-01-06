@@ -15,6 +15,9 @@ This repository focuses on analyzing political tweets collected from Twitter/X, 
 Below is a demo of the embedding and clustering experiment in action:
 
 
+[▶️ Watch Video Demo](https://youtu.be/djjLpIrIrts?si=wY1LExkeourBbwUa)
+
+
 ![EC Demo](images/EC_demo.gif)
 
 
