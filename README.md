@@ -1,6 +1,5 @@
 # 🐦 Twitter/X Political Posts Analysis  
-### 🚀 USC HUMANS Lab Hackathon 2024
-
+### 🚀 Embedding, Clustering, and NL to SQL tool
 
 Welcome to my submission for the **USC HUMANS Lab Hackathon 2024**!  
 
