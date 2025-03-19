@@ -1,8 +1,5 @@
 # 🐦 Twitter/X Political Posts Analysis  
-### 🚀 USC HUMANS Lab Hackathon 2024
-
-
-Welcome to my submission for the **USC HUMANS Lab Hackathon 2024**!  
+### 🚀 Embedding, Clustering, and NL to SQL tool
 
 This repository focuses on analyzing political tweets collected from Twitter/X, and demonstrates a pipeline to **extract**, **store**, **query**, and **analyze** the data. 
 
@@ -13,6 +10,9 @@ This repository focuses on analyzing political tweets collected from Twitter/X, 
 ### Embedding and Clustering Demo
 
 Below is a demo of the embedding and clustering experiment in action:
+
+
+[▶️ Watch Video Demo](https://youtu.be/djjLpIrIrts?si=wY1LExkeourBbwUa)
 
 
 ![EC Demo](images/EC_demo.gif)
